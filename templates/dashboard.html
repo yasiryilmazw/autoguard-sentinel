@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoGuard Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+    <div class="top-bar">
+        <div>
+            <h1>🚨 AutoGuard Sentinel Dashboard</h1>
+            <p class="subtitle">Smart Motion-Based Security Monitoring System</p>
+        </div>
+        <a class="logout-btn" href="/logout">Logout</a>
+    </div>
+
+    <div class="stats">
+        <div class="stat-card">
+            <h3>Total Events</h3>
+            <p>{{ total_events }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Unreviewed</h3>
+            <p>{{ unreviewed }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Reviewed</h3>
+            <p>{{ reviewed }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>False Alarm</h3>
+            <p>{{ false_alarm }}</p>
+        </div>
+    </div>
+
+    <div class="dashboard-row">
+
+        <div class="chart-box">
+            <h2>Status Distribution</h2>
+            <canvas id="statusChart"></canvas>
+        </div>
+
+        <div class="settings-box">
+            <h2>System Settings</h2>
+
+            <form action="/update_settings" method="post" class="settings-form">
+                <div class="settings-field">
+                    <label for="motion_area_threshold">Motion Area Threshold</label>
+                    <input
+                        type="number"
+                        id="motion_area_threshold"
+                        name="motion_area_threshold"
+                        value="{{ config.motion_area_threshold }}"
+                        required
+                    >
+                </div>
+
+                <div class="settings-field">
+                    <label for="cooldown_seconds">Cooldown Seconds</label>
+                    <input
+                        type="number"
+                        id="cooldown_seconds"
+                        name="cooldown_seconds"
+                        value="{{ config.cooldown_seconds }}"
+                        required
+                    >
+                </div>
+
+                <button type="submit">Save Settings</button>
+            </form>
+        </div>
+
+    </div>
+
+    <table>
+        <tr>
+            <th>ID</th>
+            <th>Timestamp</th>
+            <th>Image</th>
+            <th>Status</th>
+            <th>Note</th>
+            <th>Actions</th>
+        </tr>
+
+        {% for event in events %}
+        <tr>
+            <td>{{ event[0] }}</td>
+            <td>{{ event[1] }}</td>
+            <td>
+                <img src="/{{ event[2] }}" class="preview-image" onclick="openImageModal(this.src)">
+            </td>
+            <td>
+                {% if event[4] == "unreviewed" %}
+                    <span class="status-badge status-unreviewed">Unreviewed</span>
+                {% elif event[4] == "reviewed" %}
+                    <span class="status-badge status-reviewed">Reviewed</span>
+                {% elif event[4] == "false alarm" %}
+                    <span class="status-badge status-false">False Alarm</span>
+                {% else %}
+                    <span class="status-badge">{{ event[4] }}</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if event[3] %}
+                    <span class="note-text">{{ event[3] }}</span>
+                {% else %}
+                    <span class="note-empty">No note</span>
+                {% endif %}
+            </td>
+            <td>
+                <a class="reviewed" href="/mark_reviewed/{{ event[0] }}">Reviewed</a>
+                <a class="false-alarm" href="/mark_false_alarm/{{ event[0] }}">False Alarm</a>
+                <a class="delete-btn" href="/delete_event/{{ event[0] }}">Delete</a>
+
+                <button
+                    class="note-btn"
+                    data-event-id="{{ event[0] }}"
+                    data-note="{{ event[3] | default('', true) | e }}"
+                    onclick="openNoteModal(this)">
+                    Edit Note
+                </button>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <div id="imageModal" class="modal" onclick="closeImageModal()">
+        <span class="close-btn">&times;</span>
+        <img class="modal-content" id="modalImage">
+    </div>
+
+    <div id="noteModal" class="modal" onclick="closeNoteModalOutside(event)">
+        <div class="note-modal-box">
+            <span class="close-btn note-close" onclick="closeNoteModal()">&times;</span>
+            <h2>Edit Note</h2>
+            <form id="noteForm" method="post">
+                <input type="text" id="noteInput" name="note" placeholder="Write note here">
+                <button type="submit">Save Note</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <div id="chart-data"
+        data-unreviewed="{{ unreviewed }}"
+        data-reviewed="{{ reviewed }}"
+        data-false="{{ false_alarm }}">
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+
+</body>
+</html>
