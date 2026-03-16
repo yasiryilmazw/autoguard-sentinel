@@ -1,4 +1,5 @@
 from flask import Flask, render_template, send_from_directory, redirect, url_for, request, session
+from werkzeug.security import generate_password_hash, check_password_hash
 import sqlite3
 import os
 import json
@@ -6,35 +7,47 @@ import json
 app = Flask(__name__)
 app.secret_key = "autoguard_secret_key"
 
+# Admin bilgileri
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "12345"
+
+# Şifre: 12345
+# İstersen sonra kendi hash'inle değiştirebilirsin.
+ADMIN_PASSWORD_HASH = generate_password_hash("12345")
+
+DB_PATH = "autoguard.db"
+CONFIG_PATH = "config.json"
+IMAGES_FOLDER = "images"
+
+
+def get_db_connection():
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
 
 
 def get_events():
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
-
     cursor.execute("SELECT * FROM events ORDER BY id DESC")
     rows = cursor.fetchall()
-
     connection.close()
     return rows
 
 
 def get_stats():
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM events")
     total_events = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM events WHERE status='unreviewed'")
+    cursor.execute("SELECT COUNT(*) FROM events WHERE status = 'unreviewed'")
     unreviewed = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM events WHERE status='reviewed'")
+    cursor.execute("SELECT COUNT(*) FROM events WHERE status = 'reviewed'")
     reviewed = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM events WHERE status='false alarm'")
+    cursor.execute("SELECT COUNT(*) FROM events WHERE status = 'false alarm'")
     false_alarm = cursor.fetchone()[0]
 
     connection.close()
@@ -42,18 +55,26 @@ def get_stats():
 
 
 def load_config():
-    with open("config.json", "r") as file:
+    if not os.path.exists(CONFIG_PATH):
+        default_config = {
+            "motion_area_threshold": 5000,
+            "cooldown_seconds": 10
+        }
+        save_config(default_config)
+        return default_config
+
+    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
 def save_config(config_data):
-    with open("config.json", "w") as file:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as file:
         json.dump(config_data, file, indent=4)
 
 
 @app.route("/images/<path:filename>")
 def serve_image(filename):
-    return send_from_directory("images", filename)
+    return send_from_directory(IMAGES_FOLDER, filename)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -61,10 +82,10 @@ def login():
     error = None
 
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
 
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password):
             session["admin_logged_in"] = True
             return redirect(url_for("dashboard"))
         else:
@@ -104,7 +125,7 @@ def mark_reviewed(event_id):
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
 
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("UPDATE events SET status = 'reviewed' WHERE id = ?", (event_id,))
     connection.commit()
@@ -118,7 +139,7 @@ def mark_false_alarm(event_id):
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
 
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("UPDATE events SET status = 'false alarm' WHERE id = ?", (event_id,))
     connection.commit()
@@ -132,21 +153,22 @@ def delete_event(event_id):
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
 
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
 
     cursor.execute("SELECT image_path FROM events WHERE id = ?", (event_id,))
     row = cursor.fetchone()
 
     if row:
-        image_path = row[0]
-        if os.path.exists(image_path):
+        image_path = row["image_path"] if isinstance(row, sqlite3.Row) else row[0]
+
+        if image_path and os.path.exists(image_path):
             os.remove(image_path)
 
-    cursor.execute("DELETE FROM events WHERE id = ?", (event_id,))
-    connection.commit()
-    connection.close()
+        cursor.execute("DELETE FROM events WHERE id = ?", (event_id,))
+        connection.commit()
 
+    connection.close()
     return redirect(url_for("dashboard"))
 
 
@@ -155,9 +177,9 @@ def add_note(event_id):
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
 
-    note = request.form["note"]
+    note = request.form.get("note", "")
 
-    connection = sqlite3.connect("autoguard.db")
+    connection = get_db_connection()
     cursor = connection.cursor()
     cursor.execute("UPDATE events SET note = ? WHERE id = ?", (note, event_id))
     connection.commit()
@@ -171,8 +193,8 @@ def update_settings():
     if not session.get("admin_logged_in"):
         return redirect(url_for("login"))
 
-    motion_area_threshold = int(request.form["motion_area_threshold"])
-    cooldown_seconds = int(request.form["cooldown_seconds"])
+    motion_area_threshold = int(request.form.get("motion_area_threshold", 5000))
+    cooldown_seconds = int(request.form.get("cooldown_seconds", 10))
 
     config_data = {
         "motion_area_threshold": motion_area_threshold,
@@ -180,7 +202,6 @@ def update_settings():
     }
 
     save_config(config_data)
-
     return redirect(url_for("dashboard"))
 
 

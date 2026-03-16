@@ -4,126 +4,311 @@ import os
 import time
 import sqlite3
 import json
+from ultralytics import YOLO
 from telegram_alert import send_message, send_photo
-
 
 CAMERA_INDEX = 0
 CAMERA_WARMUP_TIME = 3
+IMAGES_FOLDER = "images"
+DB_PATH = "autoguard.db"
+CONFIG_PATH = "config.json"
+
+os.makedirs(IMAGES_FOLDER, exist_ok=True)
+
+# YOLO modeli
+model = YOLO("yolov8n.pt")
 
 
-os.makedirs("images", exist_ok=True)
+def log_info(message):
+    print(f"[INFO] {message}")
+
+
+def log_error(message):
+    print(f"[ERROR] {message}")
+
+
+def cleanup_old_images(folder="images", days=30):
+    try:
+        if not os.path.exists(folder):
+            return
+
+        now = time.time()
+        cutoff = now - (days * 86400)
+
+        for filename in os.listdir(folder):
+            filepath = os.path.join(folder, filename)
+
+            if os.path.isfile(filepath):
+                file_time = os.path.getmtime(filepath)
+
+                if file_time < cutoff:
+                    try:
+                        os.remove(filepath)
+                        print(f"[HOUSEKEEPING] Silindi: {filename}")
+                    except Exception as e:
+                        print(f"[HOUSEKEEPING ERROR] {e}")
+
+    except Exception as e:
+        log_error(f"Housekeeping hatası: {e}")
 
 
 def load_config():
-    with open("config.json", "r") as file:
-        return json.load(file)
+    default_config = {
+        "motion_area_threshold": 5000,
+        "cooldown_seconds": 10
+    }
+
+    try:
+        if not os.path.exists(CONFIG_PATH):
+            log_info("config.json bulunamadı, varsayılan ayarlar kullanılacak.")
+            return default_config
+
+        with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+            config = json.load(file)
+
+        return {
+            "motion_area_threshold": config.get("motion_area_threshold", 5000),
+            "cooldown_seconds": config.get("cooldown_seconds", 10)
+        }
+
+    except Exception as e:
+        log_error(f"Config okunamadı: {e}")
+        return default_config
 
 
 def save_event(image_path, timestamp):
-    connection = sqlite3.connect("autoguard.db")
-    cursor = connection.cursor()
+    connection = None
+    try:
+        connection = sqlite3.connect(DB_PATH)
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO events (timestamp, image_path)
+            VALUES (?, ?)
+            """,
+            (timestamp, image_path)
+        )
+        connection.commit()
+        log_info("Olay veritabanına kaydedildi.")
+    except Exception as e:
+        log_error(f"Veritabanına kayıt hatası: {e}")
+    finally:
+        if connection:
+            connection.close()
 
-    cursor.execute("""
-        INSERT INTO events (timestamp, image_path)
-        VALUES (?, ?)
-    """, (timestamp, image_path))
 
-    connection.commit()
-    connection.close()
+def send_telegram_alert(image_path):
+    try:
+        send_message("Person detected by AutoGuard!")
+        send_photo(image_path)
+        log_info("Telegram bildirimi gönderildi.")
+    except Exception as e:
+        log_error(f"Telegram hatası: {e}")
+
+
+def save_motion_image(frame):
+    try:
+        filename = os.path.join(
+            IMAGES_FOLDER,
+            f"motion_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
+        )
+
+        success = cv2.imwrite(filename, frame)
+
+        if not success:
+            log_error("Görüntü dosyaya kaydedilemedi.")
+            return None
+
+        log_info(f"Görüntü kaydedildi: {filename}")
+        return filename
+
+    except Exception as e:
+        log_error(f"Görüntü kaydetme hatası: {e}")
+        return None
+
+
+def detect_person(frame):
+    try:
+        results = model(frame, verbose=False)
+
+        for result in results:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+
+                if class_id == 0:
+                    confidence = float(box.conf[0])
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    box_width = x2 - x1
+                    box_height = y2 - y1
+                    box_area = box_width * box_height
+
+                    if confidence >= 0.80 and box_area >= 25000:
+                        return True
+
+        return False
+
+    except Exception as e:
+        log_error(f"YOLO algılama hatası: {e}")
+        return False
+
+
+def draw_person_boxes(frame):
+    try:
+        results = model(frame, verbose=False)
+
+        for result in results:
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+
+                if class_id == 0:
+                    confidence = float(box.conf[0])
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+                    box_width = x2 - x1
+                    box_height = y2 - y1
+                    box_area = box_width * box_height
+
+                    if confidence >= 0.80 and box_area >= 25000:
+                        label = f"Person {confidence:.2f}"
+
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.putText(
+                            frame,
+                            label,
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            (0, 0, 255),
+                            2
+                        )
+
+        return frame
+
+    except Exception as e:
+        log_error(f"YOLO kutu çizme hatası: {e}")
+        return frame
 
 
 def main():
-    print("Starting AutoGuard motion detector...")
+    cleanup_old_images()
+
+    log_info("AutoGuard motion detector başlatılıyor...")
+    log_info("YOLOv8 modeli yüklendi.")
 
     config = load_config()
     motion_area_threshold = config["motion_area_threshold"]
     cooldown_seconds = config["cooldown_seconds"]
 
-    print(f"Motion threshold: {motion_area_threshold}")
-    print(f"Cooldown seconds: {cooldown_seconds}")
+    log_info(f"Motion threshold: {motion_area_threshold}")
+    log_info(f"Cooldown seconds: {cooldown_seconds}")
 
-    camera = cv2.VideoCapture(CAMERA_INDEX)
+    camera = None
 
-    print("Camera warming up...")
-    time.sleep(CAMERA_WARMUP_TIME)
+    try:
+        camera = cv2.VideoCapture(CAMERA_INDEX)
 
-    ret, frame1 = camera.read()
-    ret, frame2 = camera.read()
+        if not camera.isOpened():
+            log_error("Kamera açılamadı.")
+            return
 
-    if not ret:
-        print("Failed to access camera.")
-        camera.release()
-        return
+        log_info("Kamera ısınıyor...")
+        time.sleep(CAMERA_WARMUP_TIME)
 
-    last_capture_time = 0
+        ret1, frame1 = camera.read()
+        ret2, frame2 = camera.read()
 
-    while True:
-        diff = cv2.absdiff(frame1, frame2)
+        if not ret1 or not ret2 or frame1 is None or frame2 is None:
+            log_error("Kameradan başlangıç frame'leri okunamadı.")
+            return
 
-        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        last_capture_time = 0
 
-        _, thresh = cv2.threshold(blur, 20, 255, cv2.THRESH_BINARY)
-        dilated = cv2.dilate(thresh, None, iterations=3)
-
-        contours, _ = cv2.findContours(
-            dilated, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        motion_detected = False
-
-        for contour in contours:
-            if cv2.contourArea(contour) < motion_area_threshold:
-                continue
-
-            motion_detected = True
-
-            x, y, w, h = cv2.boundingRect(contour)
-
-            cv2.rectangle(
-                frame1,
-                (x, y),
-                (x + w, y + h),
-                (0, 255, 0),
-                2
-            )
-
-        current_time = time.time()
-
-        if motion_detected and (current_time - last_capture_time) > cooldown_seconds:
-            print("Motion detected!")
-
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            filename = f"images/motion_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.jpg"
-
-            cv2.imwrite(filename, frame1)
-
+        while True:
             try:
-                send_message("🚨 Motion detected by AutoGuard!")
-                send_photo(filename)
+                diff = cv2.absdiff(frame1, frame2)
+                gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                _, thresh = cv2.threshold(blur, 20, 255, cv2.THRESH_BINARY)
+                dilated = cv2.dilate(thresh, None, iterations=3)
+
+                contours, _ = cv2.findContours(
+                    dilated,
+                    cv2.RETR_TREE,
+                    cv2.CHAIN_APPROX_SIMPLE
+                )
+
+                motion_detected = False
+
+                for contour in contours:
+                    if cv2.contourArea(contour) < motion_area_threshold:
+                        continue
+
+                    motion_detected = True
+                    x, y, w, h = cv2.boundingRect(contour)
+                    cv2.rectangle(frame1, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+                current_time = time.time()
+
+                if motion_detected and (current_time - last_capture_time) > cooldown_seconds:
+                    log_info("Hareket algılandı. YOLO ile insan kontrol ediliyor...")
+
+                    person_count = 0
+
+                    if detect_person(frame1):
+                        person_count += 1
+
+                    if detect_person(frame2):
+                        person_count += 1
+
+                    ret_extra, frame3 = camera.read()
+                    if ret_extra and frame3 is not None:
+                        if detect_person(frame3):
+                            person_count += 1
+
+                    if person_count >= 2:
+                        log_info("İnsan algılandı.")
+
+                        frame1 = draw_person_boxes(frame1)
+                        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        saved_image = save_motion_image(frame1)
+
+                        if saved_image:
+                            send_telegram_alert(saved_image)
+                            save_event(saved_image, timestamp)
+                            last_capture_time = current_time
+                    else:
+                        log_info("İnsan doğrulanmadı. Alarm gönderilmedi.")
+
+                cv2.imshow("AutoGuard Motion Detection", frame1)
+
+                frame1 = frame2
+                ret, frame2 = camera.read()
+
+                if not ret or frame2 is None:
+                    log_error("Kameradan yeni frame okunamadı. Sistem durduruluyor.")
+                    break
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    log_info("Çıkış yapıldı.")
+                    break
+
             except Exception as e:
-                print("Telegram error:", e)
+                log_error(f"Döngü içi hata: {e}")
+                time.sleep(1)
 
-            save_event(filename, timestamp)
+    except Exception as e:
+        log_error(f"Genel kamera hatası: {e}")
 
-            print("Image saved:", filename)
-            print("Event saved to database.")
+    finally:
+        if camera is not None:
+            try:
+                camera.release()
+            except Exception:
+                pass
 
-            last_capture_time = current_time
-
-        cv2.imshow("AutoGuard Motion Detection", frame1)
-
-        frame1 = frame2
-        ret, frame2 = camera.read()
-
-        if not ret:
-            break
-
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    camera.release()
-    cv2.destroyAllWindows()
+        cv2.destroyAllWindows()
+        log_info("Kaynaklar temizlendi, sistem kapatıldı.")
 
 
 if __name__ == "__main__":
