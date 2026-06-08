@@ -15,7 +15,7 @@ CONFIG_PATH = "config.json"
 
 os.makedirs(IMAGES_FOLDER, exist_ok=True)
 
-# YOLO modeli
+# YOLO model
 model = YOLO("yolov8n.pt")
 
 
@@ -44,12 +44,12 @@ def cleanup_old_images(folder="images", days=30):
                 if file_time < cutoff:
                     try:
                         os.remove(filepath)
-                        print(f"[HOUSEKEEPING] Silindi: {filename}")
+                        print(f"[HOUSEKEEPING] Deleted: {filename}")
                     except Exception as e:
                         print(f"[HOUSEKEEPING ERROR] {e}")
 
     except Exception as e:
-        log_error(f"Housekeeping hatası: {e}")
+        log_error(f"Housekeeping Error: {e}")
 
 
 def load_config():
@@ -60,7 +60,7 @@ def load_config():
 
     try:
         if not os.path.exists(CONFIG_PATH):
-            log_info("config.json bulunamadı, varsayılan ayarlar kullanılacak.")
+            log_info("config.json not found. Using default configuration.")
             return default_config
 
         with open(CONFIG_PATH, "r", encoding="utf-8") as file:
@@ -72,7 +72,7 @@ def load_config():
         }
 
     except Exception as e:
-        log_error(f"Config okunamadı: {e}")
+        log_error(f"Failed to read config : {e}")
         return default_config
 
 
@@ -89,9 +89,9 @@ def save_event(image_path, timestamp):
             (timestamp, image_path)
         )
         connection.commit()
-        log_info("Olay veritabanına kaydedildi.")
+        log_info("Event saved to database.")
     except Exception as e:
-        log_error(f"Veritabanına kayıt hatası: {e}")
+        log_error(f"Database save error: {e}")
     finally:
         if connection:
             connection.close()
@@ -101,9 +101,9 @@ def send_telegram_alert(image_path):
     try:
         send_message("Person detected by AutoGuard!")
         send_photo(image_path)
-        log_info("Telegram bildirimi gönderildi.")
+        log_info("Telegram notification  sent.")
     except Exception as e:
-        log_error(f"Telegram hatası: {e}")
+        log_error(f"Telegram error: {e}")
 
 
 def save_motion_image(frame):
@@ -116,14 +116,14 @@ def save_motion_image(frame):
         success = cv2.imwrite(filename, frame)
 
         if not success:
-            log_error("Görüntü dosyaya kaydedilemedi.")
+            log_error("Failed to save image.")
             return None
 
-        log_info(f"Görüntü kaydedildi: {filename}")
+        log_info(f"Image saved: {filename}")
         return filename
 
     except Exception as e:
-        log_error(f"Görüntü kaydetme hatası: {e}")
+        log_error(f"Image save error: {e}")
         return None
 
 
@@ -149,7 +149,7 @@ def detect_person(frame):
         return False
 
     except Exception as e:
-        log_error(f"YOLO algılama hatası: {e}")
+        log_error(f"YOLO detection  error: {e}")
         return False
 
 
@@ -186,15 +186,15 @@ def draw_person_boxes(frame):
         return frame
 
     except Exception as e:
-        log_error(f"YOLO kutu çizme hatası: {e}")
+        log_error(f"YOLO box drawing error: {e}")
         return frame
 
 
 def main():
     cleanup_old_images()
 
-    log_info("AutoGuard motion detector başlatılıyor...")
-    log_info("YOLOv8 modeli yüklendi.")
+    log_info("Starting AutoGuard motion detector...")
+    log_info("YOLOv8 model loaded")
 
     config = load_config()
     motion_area_threshold = config["motion_area_threshold"]
@@ -209,17 +209,17 @@ def main():
         camera = cv2.VideoCapture(CAMERA_INDEX)
 
         if not camera.isOpened():
-            log_error("Kamera açılamadı.")
+            log_error("Failed to open camera.")
             return
 
-        log_info("Kamera ısınıyor...")
+        log_info("Camera warming up...")
         time.sleep(CAMERA_WARMUP_TIME)
 
         ret1, frame1 = camera.read()
         ret2, frame2 = camera.read()
 
         if not ret1 or not ret2 or frame1 is None or frame2 is None:
-            log_error("Kameradan başlangıç frame'leri okunamadı.")
+            log_error("Failed to read initial frames from the camera.")
             return
 
         last_capture_time = 0
@@ -251,7 +251,7 @@ def main():
                 current_time = time.time()
 
                 if motion_detected and (current_time - last_capture_time) > cooldown_seconds:
-                    log_info("Hareket algılandı. YOLO ile insan kontrol ediliyor...")
+                    log_info("Motion detected. Running YOLO detection...")
 
                     person_count = 0
 
@@ -267,7 +267,7 @@ def main():
                             person_count += 1
 
                     if person_count >= 2:
-                        log_info("İnsan algılandı.")
+                        log_info("Person detected.")
 
                         frame1 = draw_person_boxes(frame1)
                         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -278,7 +278,7 @@ def main():
                             save_event(saved_image, timestamp)
                             last_capture_time = current_time
                     else:
-                        log_info("İnsan doğrulanmadı. Alarm gönderilmedi.")
+                        log_info("Person not confirmed. Alarm was not sent.")
 
                 cv2.imshow("AutoGuard Motion Detection", frame1)
 
@@ -286,19 +286,19 @@ def main():
                 ret, frame2 = camera.read()
 
                 if not ret or frame2 is None:
-                    log_error("Kameradan yeni frame okunamadı. Sistem durduruluyor.")
+                    log_error("Failed to read a new frame from the camera. Stopping system.")
                     break
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
-                    log_info("Çıkış yapıldı.")
+                    log_info("System terminated.")
                     break
 
             except Exception as e:
-                log_error(f"Döngü içi hata: {e}")
+                log_error(f"Loop error: {e}")
                 time.sleep(1)
 
     except Exception as e:
-        log_error(f"Genel kamera hatası: {e}")
+        log_error(f"General camera error: {e}")
 
     finally:
         if camera is not None:
@@ -308,7 +308,7 @@ def main():
                 pass
 
         cv2.destroyAllWindows()
-        log_info("Kaynaklar temizlendi, sistem kapatıldı.")
+        log_info("Resources released. System shut down.")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ app.secret_key = "autoguard_secret_key"
 ADMIN_USERNAME = "admin"
 
 # Şifre: 12345
-# İstersen sonra kendi hash'inle değiştirebilirsin.
 ADMIN_PASSWORD_HASH = generate_password_hash("12345")
 
 DB_PATH = "autoguard.db"
